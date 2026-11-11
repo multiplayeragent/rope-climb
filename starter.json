@@ -1,0 +1,21 @@
+{
+  "name": "Rope Climb",
+  "genre": "platformer",
+  "dim": "2D",
+  "mode": "Co-op",
+  "players": "2–4",
+  "hook": "Roped together. One slip drags you all down.",
+  "how": "Climb a tall tower as a team, tied together by a rope. Grip to hold on when a partner slips, haul them back up, and climb as high as you can before time runs out.",
+  "controls": "Arrows or A/D to walk, Space to jump, hold Shift or S to grip (grip + Space hauls); on touch, ◀ ▶, Jump and Grip",
+  "uses": [
+    ["Leaderboard", "The highest climbs, measured by the team's lowest climber."],
+    ["Host-run rounds", "The host's browser picks the tower, ties the rope, runs the timer and keeps the team's best height; if it leaves, the next player takes over."],
+    ["Bots", "A bot partner climbs with you when you're alone: it waits for you, grips when you fall and hauls you up."],
+    ["Live sync", "Everyone climbs the same tower, and the rope pulls on each climber as their partners move."]
+  ],
+  "ideas": [
+    "Add falling rocks that knock climbers off the wall",
+    "Make the tower a frozen ice cliff with slippery ledges",
+    "Give each climber a single rope boost that throws a partner upward"
+  ]
+}
