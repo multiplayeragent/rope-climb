@@ -27,6 +27,7 @@
   .card h2 { margin: 0 0 4px; font-size: 26px; color: #ffe14d; } .card .sub { font-size: 14px; opacity: .9; }
   .card h3 { margin: 14px 0 4px; font-size: 13px; color: #9fd8ff; text-align: left; }
   .card ol { margin: 0; padding-left: 24px; font-size: 14px; text-align: left; } .card li span { float: right; font-variant-numeric: tabular-nums; } .card li.me { color: #ffe14d; font-weight: 700; }
+  .card li.note { list-style: none; margin-left: -24px; opacity: .8; }
   .card p { margin: 10px 0 0; font-size: 13px; opacity: .75; }
   button.go { width: 100%; min-height: 48px; margin-top: 16px; border: 0; border-radius: 12px; background: #ffe14d; color: #3a2400; font: 800 17px system-ui, sans-serif; cursor: pointer; }
   .pad { position: fixed; bottom: calc(max(14px, env(safe-area-inset-bottom)) + 14px); display: flex; gap: 10px; align-items: flex-end; touch-action: none; }
@@ -49,7 +50,7 @@
 <div id="over" hidden><div class="card">
   <h2 id="overTitle"></h2><div class="sub" id="overSub"></div>
   <h3>This climb</h3><ol id="results"></ol>
-  <h3>Highest climbs</h3><ol id="board"><li>Loading…</li></ol>
+  <h3>Highest climbs</h3><ol id="board"><li class="note">Loading…</li></ol>
   <button class="go" id="again">Climb a new tower</button><p id="next"></p>
 </div></div>
 <script>
@@ -341,12 +342,13 @@ function newRun(id) {
   const seed = (Math.random() * 1e9) | 0, T = clock();
   return writeRun({ id, seed, phase: "climb", startAt: T, endsAt: T + CONFIG.runMs, team: teamFor(run()?.team || []), best: 0, sk: ATTRACT ? -1 : 0 });
 }
+const isBot = (id) => id.startsWith("bot:"); // bot ids have a colon, which a player's sessionId never has (one could start with "b")
 /** Who's on the rope: the people here in the order they joined it, then bots in the empty seats. */
 function teamFor(old) {
-  const live = new Set(livePlayers()), humans = old.filter((id) => !id.startsWith("b") && live.has(id));
+  const live = new Set(livePlayers()), humans = old.filter((id) => !isBot(id) && live.has(id));
   for (const id of livePlayers()) if (!humans.includes(id) && humans.length < CONFIG.maxTeam) humans.push(id);
-  const want = Math.max(0, CONFIG.seats - humans.length), bots = old.filter((id) => id.startsWith("b")).slice(0, want);
-  while (bots.length < want) bots.push("b" + Math.random().toString(36).slice(2, 6));
+  const want = Math.max(0, CONFIG.seats - humans.length), bots = old.filter(isBot).slice(0, want);
+  while (bots.length < want) bots.push("bot:" + Math.random().toString(36).slice(2, 6));
   return [...humans, ...bots];
 }
 /** Become host: adopt the bots exactly where state has them (the run stays in state). */
@@ -373,7 +375,7 @@ function hostTick(dt, now) {
   const team = teamFor(r.team);
   if (team.join() !== r.team.join()) r = writeRun({ ...r, team }); // someone joined or left: retie the rope
   for (const id of [...host.bots.keys()]) if (!r.team.includes(id)) host.bots.delete(id);
-  for (const id of r.team) if (id.startsWith("b") && !host.bots.has(id)) { // a bot ties on
+  for (const id of r.team) if (isBot(id) && !host.bots.has(id)) { // a bot ties on
     const used = new Set([...host.bots.values()].map((b) => b.name)), taken = new Set([...r.team.map(colorOf), ...[...host.bots.values()].map((b) => b.color)]);
     const s = spawnBeside(r, id);
     host.bots.set(id, Object.assign(newClimber(s.x, s.y, s.ground), { id, name: BOT_NAMES.find((n) => !used.has(n)) || "Bot", color: COLORS.find((c) => !taken.has(c)) || "#ccc", wait: now + 600 }));
@@ -393,24 +395,39 @@ const botList = () => (host.acting ? [...host.bots.values()].map(botWire) : shar
 function teamHeight(r) { const hs = r.team.map((id) => bodyOf(id)).filter(Boolean).map(heightOf); return hs.length ? Math.min(...hs) : 0; }
 
 // ── BOTS ────────────────────────────────────────────────────────────────────────────
-/** Try a jump in its head: from offset `rel` on `from`, leaning `dir`, steering at `target`. Does it land there? */
-function simJump(from, rel, dir, target) {
-  const s = newClimber(from.x + rel, from.y, from), dt = 1 / 60, tc = target.x + target.w / 2;
-  for (let i = 0; i < 120; i++) {
-    stepClimber(s, { dir: i === 0 ? dir : Math.abs(tc - s.x) > 0.25 ? Math.sign(tc - s.x) : 0, jump: i === 0, held: true }, dt);
-    if (s.ground && i > 2) return s.ground === target;
-    if (s.y > from.y + 1) return false;
+/** Try a jump in its head: standing at offset `rel` on `from`, leaning `dir`, steering at `target`. Does it land there?
+ *  With a run-up (`start` given), it stands at `start` first, runs `dir` and jumps as it passes `rel`. */
+function simJump(from, rel, dir, target, start) {
+  const s = newClimber(from.x + (start ?? rel), from.y, from), dt = 1 / 60, tc = target.x + target.w / 2;
+  let jumped = -1;
+  for (let i = 0; i < 240; i++) {
+    const go = jumped < 0 && (start === undefined || (s.x - (from.x + rel)) * dir >= 0);
+    if (go) jumped = i;
+    stepClimber(s, { dir: jumped < 0 || i === jumped ? dir : Math.abs(tc - s.x) > 0.25 ? Math.sign(tc - s.x) : 0, jump: go, held: true }, dt);
+    if (jumped < 0) { if (!s.ground) return false; continue; } // ran off the edge before the jump
+    if (s.ground && i > jumped + 2) return s.ground === target;
+    if (s.y > Math.max(from.y, target.y) + 1) return false;
   }
   return false;
 }
 /** Pick the next jump: a platform above, where to take off, which way to lean. */
 function planClimb(b) {
   const from = b.ground; if (!from) return null;
-  const cands = platsBetween(from.y - 2.9, from.y - 0.8).filter((p) => p !== from).sort((p, q) => (p.k - q.k) || ((levels[q.k].main === q) - (levels[p.k].main === p)));
+  const isMain = (p) => levels[p.k].main === p;
+  return planJump(b, from, platsBetween(from.y - 2.9, from.y - 0.8).sort((p, q) => (p.k - q.k) || (isMain(q) - isMain(p)))) // up a level: the nearest first, the main path first
+    || planJump(b, from, platsBetween(from.y - 0.8, from.y + 2.5).filter(isMain).sort((p, q) => q.k - p.k)); // a dead end (a side platform): across or down to the main path, the highest first
+}
+/** The first of these platforms (in order) the bot can jump to from `from`: from a standstill, else with a run-up. */
+function planJump(b, from, plats) {
+  const cands = plats.filter((p) => p !== from);
   for (const target of cands.slice(0, 4)) {
     const tc = target.x + target.w / 2, edge = tc > b.x ? from.w - 0.35 : 0.35;
     for (const rel of [b.x - from.x, tc - from.x, edge].map((r) => Math.max(0.3, Math.min(from.w - 0.3, r))))
       for (const dir of [Math.sign(tc - (from.x + rel)) || 1, 0]) if (simJump(from, rel, dir, target)) return { from, rel, dir, target };
+  }
+  for (const target of cands.slice(0, 4)) { // too far from a standstill: take a run-up from the other end and jump near the edge
+    const dir = target.x + target.w / 2 > from.x + from.w / 2 ? 1 : -1, start = dir > 0 ? 0.3 : from.w - 0.3;
+    for (const back of [0.35, 0.6, 0.9]) { const rel = dir > 0 ? from.w - back : back; if ((rel - start) * dir > 0.5 && simJump(from, rel, dir, target, start)) return { from, rel, dir, target, start }; }
   }
   return null;
 }
@@ -450,6 +467,13 @@ function botInput(b, now) {
     return { dir: 0 };
   }
   const p = b.plan, spot = p.from.x + p.rel;
+  if (p.start !== undefined) { // a running jump: walk back to the start and stop, then run and jump at the spot
+    const start = p.from.x + p.start;
+    if (!p.ready) { if (Math.abs(start - b.x) > 0.12) return { dir: Math.sign(start - b.x) }; if (Math.abs(b.vx) > 0.4) return { dir: 0 }; p.ready = true; }
+    if ((b.x - spot) * p.dir < 0) return { dir: p.dir };
+    p.leapt = true;
+    return { dir: p.dir, jump: true, held: true };
+  }
   if (Math.abs(spot - b.x) > 0.12) return { dir: Math.sign(spot - b.x) };
   if (Math.abs(b.vx) > 0.4) return { dir: 0 };
   p.leapt = true;
@@ -700,11 +724,11 @@ function openCard(r) {
   $("overSub").textContent = r.best >= 50 ? "What a climb. The rope held." : r.best >= 25 ? "Past the first rest ledge!" : "Stick together and grip when someone slips.";
   $("results").innerHTML = (r.res || []).map((s) => `<li class="${s.i === me.id ? "me" : ""}">${esc(s.i === me.id ? myName : s.n)}<span>${s.m} m</span></li>`).join("");
   const list = $("board");
-  if (!board) { list.innerHTML = "<li>Leaderboards need a connection.</li>"; return; }
-  list.innerHTML = "<li>Loading…</li>";
+  if (!board) { list.innerHTML = "<li class=\"note\">Leaderboards need a connection.</li>"; return; }
+  list.innerHTML = "<li class=\"note\">Loading…</li>";
   (r.best >= 1 && r.team.includes(me.id) ? board.submit(r.best).catch(() => null) : Promise.resolve()).then(() => board.top(10)).then(({ entries }) => {
-    list.innerHTML = entries.length ? entries.map((e) => `<li>${esc(e.username || "Player")}<span>${e.score} m</span></li>`).join("") : "<li>No climbs yet. Set the first.</li>";
-  }).catch(() => { list.innerHTML = "<li>Couldn't load the leaderboard.</li>"; });
+    list.innerHTML = entries.length ? entries.map((e) => `<li>${esc(e.username || "Player")}<span>${e.score} m</span></li>`).join("") : "<li class=\"note\">No climbs yet. Set the first.</li>";
+  }).catch(() => { list.innerHTML = "<li class=\"note\">Couldn't load the leaderboard.</li>"; });
 }
 $("again").onclick = () => { if (host.acting) host.again = true; else net.send("again", {}); };
 let actx = null;
